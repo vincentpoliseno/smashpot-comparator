@@ -85,6 +85,30 @@ function forceAt(t, r) {
   if (t <= r.kneeTravel) return r._keff_n * t;
   return r.Fknee + r._kp_n * (t - r.kneeTravel);
 }
+function travelAtForce(F, r) {
+  if (F <= 0) return 0;
+  if (F <= r.Fknee) return F / r._keff_n;
+  return r.kneeTravel + (F - r.Fknee) / r._kp_n;
+}
+function gMarkers(r, travel) {
+  if (r.staticN <= 0) return [];
+  const maxF = forceAt(travel, r);
+  const maxG = maxF / r.staticN;
+  const markers = [];
+  const maxIntG = Math.floor(maxG + 1e-9);
+  const maxIsInteger = Math.abs(maxG - maxIntG) < 1e-6;
+
+  for (let g = 2; g <= maxIntG; g++) {
+    const force = r.staticN * g;
+    const t = Math.min(travelAtForce(force, r), travel);
+    const atMax = Math.abs(t - travel) < 1e-6;
+    if (atMax && maxIsInteger && g === maxIntG) continue;
+    markers.push({ label: `${g}g`, t, force });
+  }
+
+  markers.push({ label: `${maxG.toFixed(1)}g`, t: travel, force: maxF, isMax: true });
+  return markers;
+}
 function rateAt(t, r) {
   if (!r.kneeReached) return r.initial;
   return t <= r.kneeTravel ? r.initial : r.final;
@@ -262,7 +286,8 @@ export default function SmashpotComparator() {
         </div>
         <Plot results={results} g={g} yMode={yMode} xRef={xRef} labels={labels} />
         <div style={S.plotKey}>
-          <span>● knee</span>
+          <span>× knee</span>
+          <span style={{ marginLeft: 18 }}>● g markers (1g = static sag … max force)</span>
           {xRef === "sag" ? <span style={{ marginLeft: 18 }}>0 = ride height (sag); negative = toward top-out</span>
             : <span style={{ marginLeft: 18 }}>◇ static sag point</span>}
         </div>
@@ -400,7 +425,12 @@ function Plot({ results, g, yMode, xRef, labels }) {
             <g key={"c" + i}>
               <polyline points={curvePts(r)} fill="none" stroke={col} strokeWidth="2.5" strokeLinejoin="round" />
               {r.kneeReached && (
-                <circle cx={x(r.kneeTravel - s)} cy={y(Math.min(kneeY, yMax))} r="5" fill={col} stroke="#14171c" strokeWidth="1.5" />
+                <g stroke={col} strokeWidth="2.2" strokeLinecap="round">
+                  <line x1={x(r.kneeTravel - s) - 5} y1={y(Math.min(kneeY, yMax)) - 5}
+                    x2={x(r.kneeTravel - s) + 5} y2={y(Math.min(kneeY, yMax)) + 5} />
+                  <line x1={x(r.kneeTravel - s) - 5} y1={y(Math.min(kneeY, yMax)) + 5}
+                    x2={x(r.kneeTravel - s) + 5} y2={y(Math.min(kneeY, yMax)) - 5} />
+                </g>
               )}
               {xRef === "top" && (
                 <g>
@@ -408,6 +438,20 @@ function Plot({ results, g, yMode, xRef, labels }) {
                   <path d={diamond(x(r.sag), y(sagCurveY), 5)} fill="#14171c" stroke={col} strokeWidth="1.8" />
                 </g>
               )}
+              {gMarkers(r, travel).map((mk, mi) => {
+                const curveY = yMode === "force" ? mk.force : rateAt(mk.t, r);
+                if (curveY > yMax) return null;
+                const cx = x(mk.t - s);
+                const cy = y(curveY);
+                const labelAbove = mi % 2 === 0;
+                return (
+                  <g key={"g" + mk.label + mi}>
+                    <circle cx={cx} cy={cy} r={mk.isMax ? 5 : 4} fill={col} stroke="#14171c" strokeWidth="1.5" />
+                    <text x={cx + 6} y={cy + (labelAbove ? -7 : 12)} fill={col} fontSize="10" fontWeight="600"
+                      fontFamily="ui-monospace, monospace">{mk.label}</text>
+                  </g>
+                );
+              })}
             </g>
           );
         })}
