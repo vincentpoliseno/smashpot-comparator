@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 /*
   Smashpot V2 Dual-Rate Coil Comparator
@@ -108,6 +108,23 @@ function gMarkers(r, travel) {
 
   markers.push({ label: `${maxG.toFixed(1)}g`, t: travel, force: maxF, isMax: true });
   return markers;
+}
+
+function gMarkerLabelPos(cx, cy, mk, mi, setupIdx, plotRight) {
+  const nearRight = mk.isMax || cx > plotRight - 30;
+  if (mk.isMax) {
+    return {
+      x: cx - 7,
+      y: cy - 8 - setupIdx * 13,
+      anchor: "end",
+    };
+  }
+  const above = mi % 2 === 0;
+  return {
+    x: nearRight ? cx - 7 : cx + 6,
+    y: cy + (above ? -7 : 12),
+    anchor: nearRight ? "end" : "start",
+  };
 }
 function rateAt(t, r) {
   if (!r.kneeReached) return r.initial;
@@ -342,6 +359,8 @@ export default function SmashpotComparator() {
 }
 
 function Plot({ results, g, yMode, xRef, labels }) {
+  const [hover, setHover] = useState(null);
+  const wrapRef = useRef(null);
   const W = 760, H = 380;
   const m = { t: 16, r: 16, b: 40, l: 58 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
@@ -367,6 +386,45 @@ function Plot({ results, g, yMode, xRef, labels }) {
   const xTicks = ticksFor(xMin, xMax, 6);
   const yTicks = ticksFor(0, yMax, 5);
 
+  const invX = (px) => xMin + ((px - m.l) / iw) * (xMax - xMin);
+
+  function handlePointerMove(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+    const svgY = ((e.clientY - rect.top) / rect.height) * H;
+    if (svgX < m.l || svgX > m.l + iw || svgY < m.t || svgY > m.t + ih) {
+      setHover(null);
+      return;
+    }
+    const hx = invX(svgX);
+    const baseR = results[0];
+    const baseT = Math.max(0, Math.min(travel, hx + shift(baseR)));
+    const baseVal = yMode === "force" ? forceAt(baseT, baseR) : rateAt(baseT, baseR);
+
+    const rows = results.map((r, i) => {
+      const t = Math.max(0, Math.min(travel, hx + shift(r)));
+      const val = yMode === "force" ? forceAt(t, r) : rateAt(t, r);
+      return {
+        label: labels[i],
+        val,
+        t,
+        delta: i === 0 ? null : pctDelta(val, baseVal),
+        color: WIRE[i],
+        gLoad: yMode === "force" && r.staticN > 0 ? val / r.staticN : null,
+      };
+    });
+
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    setHover({
+      svgX,
+      hx,
+      rows,
+      tipX: wrap ? e.clientX - wrap.left : svgX,
+      tipY: wrap ? e.clientY - wrap.top : svgY,
+      flipX: wrap ? e.clientX - wrap.left > wrap.width * 0.62 : false,
+    });
+  }
+
   function curvePts(r) {
     const s = shift(r);
     if (yMode === "rate") {
@@ -384,8 +442,9 @@ function Plot({ results, g, yMode, xRef, labels }) {
   }
 
   return (
-    <div style={{ width: "100%", overflowX: "auto" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 520, display: "block" }}>
+    <div ref={wrapRef} style={{ width: "100%", overflowX: "auto", position: "relative" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 520, display: "block", cursor: "crosshair" }}
+        onMouseMove={handlePointerMove} onMouseLeave={() => setHover(null)}>
         {xTicks.map((t, i) => (
           <line key={"gx" + i} x1={x(t)} y1={m.t} x2={x(t)} y2={m.t + ih}
             stroke={Math.abs(t) < 1e-6 && xRef === "sag" ? "#3a424e" : "#242a33"} strokeWidth="1" />
@@ -417,6 +476,11 @@ function Plot({ results, g, yMode, xRef, labels }) {
           </g>
         )}
 
+        {hover && (
+          <line x1={hover.svgX} y1={m.t} x2={hover.svgX} y2={m.t + ih}
+            stroke="#c4ccd6" strokeWidth="1" strokeDasharray="4 3" opacity="0.55" pointerEvents="none" />
+        )}
+
         {results.map((r, i) => {
           const col = WIRE[i], s = shift(r);
           const kneeY = yMode === "force" ? r.Fknee : r.final;
@@ -443,11 +507,11 @@ function Plot({ results, g, yMode, xRef, labels }) {
                 if (curveY > yMax) return null;
                 const cx = x(mk.t - s);
                 const cy = y(curveY);
-                const labelAbove = mi % 2 === 0;
+                const lp = gMarkerLabelPos(cx, cy, mk, mi, i, m.l + iw);
                 return (
                   <g key={"g" + mk.label + mi}>
                     <circle cx={cx} cy={cy} r={mk.isMax ? 5 : 4} fill={col} stroke="#14171c" strokeWidth="1.5" />
-                    <text x={cx + 6} y={cy + (labelAbove ? -7 : 12)} fill={col} fontSize="10" fontWeight="600"
+                    <text x={lp.x} y={lp.y} textAnchor={lp.anchor} fill={col} fontSize="10" fontWeight="600"
                       fontFamily="ui-monospace, monospace">{mk.label}</text>
                   </g>
                 );
@@ -470,6 +534,37 @@ function Plot({ results, g, yMode, xRef, labels }) {
           })}
         </g>
       </svg>
+      {hover && (
+        <div style={{
+          ...S.tooltip,
+          left: hover.tipX,
+          top: hover.tipY,
+          transform: hover.flipX ? "translate(calc(-100% - 10px), calc(-100% - 10px))" : "translate(10px, -10px)",
+        }}>
+          <div style={S.tooltipHead}>
+            {xRef === "sag"
+              ? `${hover.hx.toFixed(1)} mm from sag`
+              : `${hover.hx.toFixed(1)} mm travel`}
+          </div>
+          {hover.rows.map((row, i) => (
+            <div key={i} style={S.tooltipRow}>
+              <span style={{ ...S.dot, background: row.color, marginRight: 6 }} />
+              <span style={S.tooltipLabel}>{row.label}</span>
+              <span style={S.tooltipVal}>
+                {yMode === "force"
+                  ? `${row.val.toFixed(0)} N`
+                  : `${row.val.toFixed(1)} lb/in`}
+                {row.gLoad != null && (
+                  <span style={S.tooltipSub}> · {row.gLoad.toFixed(2)}g</span>
+                )}
+              </span>
+              <span style={S.tooltipDelta}>
+                {i === 0 ? "base" : row.delta == null ? "—" : `${row.delta >= 0 ? "+" : ""}${row.delta.toFixed(1)}%`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -539,6 +634,18 @@ const S = {
   baseBadgeSm: { fontSize: 9, fontFamily: "ui-monospace, monospace", color: "#f2b705", border: "1px solid #3a3520", borderRadius: 3, padding: "0px 4px", marginLeft: 6, verticalAlign: "middle" },
   pairRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
   plotKey: { marginTop: 10, fontSize: 12, color: "#c4ccd6", fontFamily: "ui-monospace, monospace", display: "flex", flexWrap: "wrap", gap: 4 },
+  tooltip: {
+    position: "absolute", pointerEvents: "none", zIndex: 10,
+    background: "#0f1216", border: "1px solid #3a424e", borderRadius: 8,
+    padding: "8px 10px", minWidth: 188, boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+    fontFamily: "ui-monospace, monospace", fontSize: 11,
+  },
+  tooltipHead: { color: "#a7b0bd", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6, paddingBottom: 5, borderBottom: "1px solid #262c35" },
+  tooltipRow: { display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: "2px 8px", padding: "3px 0" },
+  tooltipLabel: { color: "#c4ccd6", fontWeight: 600 },
+  tooltipVal: { color: "#e6e9ee", textAlign: "right", fontVariantNumeric: "tabular-nums" },
+  tooltipSub: { color: "#6b7480", fontSize: 10 },
+  tooltipDelta: { color: "#8a93a0", fontSize: 10, textAlign: "right", minWidth: 44, fontVariantNumeric: "tabular-nums" },
   table: { width: "100%", borderCollapse: "collapse", minWidth: 460 },
   th: { fontSize: 12.5, color: "#c4ccd6", fontWeight: 600, textAlign: "right", padding: "8px 12px", borderBottom: "1px solid #2c333d", whiteSpace: "nowrap" },
   tdLabel: { fontSize: 13, color: "#a7b0bd", padding: "11px 12px", borderBottom: "1px solid #20262e", whiteSpace: "nowrap" },
